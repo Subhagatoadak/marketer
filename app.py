@@ -2,7 +2,7 @@ import streamlit as st
 import io
 import logging
 import time
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import requests
 import os
 import json
@@ -25,12 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# Helper to get file data regardless of object type.
+# Helper to get file data.
 def get_file_data(file_obj):
-    """
-    Returns the bytes of the file object. If the object has a getvalue() method (as
-    in uploaded files), it is used; otherwise, file_obj.read() is used.
-    """
     try:
         return file_obj.getvalue()
     except AttributeError:
@@ -48,7 +44,7 @@ def send_generation_request(host, params, files=None):
     }
     if files is None:
         files = {}
-    # Process file parameters: if the parameter is a filename, open it; otherwise use the file object.
+    # Process file parameters.
     image = params.pop("image", None)
     mask = params.pop("mask", None)
     if image is not None and image != '':
@@ -71,7 +67,7 @@ def send_generation_request(host, params, files=None):
 
 def send_async_generation_request(host, params, files=None):
     """
-    Sends an asynchronous REST request and polls for the final result.
+    Sends an asynchronous REST request to a Stability AI endpoint and polls for the final result.
     """
     headers = {
         "Accept": "application/json",
@@ -119,7 +115,7 @@ def send_async_generation_request(host, params, files=None):
 
 def generate_marketing_ad_stability(prompt: str, negative_prompt: str, aspect_ratio: str, seed: int, output_format: str, size: str="1024x1024") -> str:
     """Generate a marketing ad using the ultra endpoint."""
-    host = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
+    host = "https://api.stability.ai/v2beta/stable-image/generate/core"
     params = {
         "prompt": prompt,
         "negative_prompt": negative_prompt,
@@ -142,7 +138,7 @@ def generate_marketing_ad_stability(prompt: str, negative_prompt: str, aspect_ra
         return None
 
 def generate_control_sketch_stability(prompt: str, negative_prompt: str, control_strength: float, seed: int, output_format: str, sketch_file) -> str:
-    """Generate image from a sketch using the control/sketch endpoint."""
+    """Generate image using the control/sketch endpoint."""
     host = "https://api.stability.ai/v2beta/stable-image/control/sketch"
     params = {
         "control_strength": control_strength,
@@ -171,7 +167,7 @@ def generate_control_sketch_stability(prompt: str, negative_prompt: str, control
         return None
 
 def generate_control_structure_stability(prompt: str, negative_prompt: str, control_strength: float, seed: int, output_format: str, structure_file) -> str:
-    """Generate image from a structure image using the control/structure endpoint."""
+    """Generate image using the control/structure endpoint."""
     host = "https://api.stability.ai/v2beta/stable-image/control/structure"
     params = {
         "control_strength": control_strength,
@@ -334,6 +330,40 @@ def generate_upscale_creative(prompt: str, negative_prompt: str, creativity: flo
         return None
 
 # ------------------------------------------------------------------------------
+# New: Function to overlay text onto an image.
+def overlay_text_on_image(image_path: str, text: str, font_size: int, font_color: str, output_format: str) -> str:
+    """
+    Opens the image from the given path, overlays the specified text using the provided font size and color,
+    and saves the new image. Returns the filename of the new image.
+    """
+    try:
+        image = Image.open(image_path).convert("RGBA")
+        txt_overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(txt_overlay)
+        try:
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except Exception as e:
+            logger.warning("Could not load 'arial.ttf'; using default font. Exception: %s", e)
+            font = ImageFont.load_default()
+        # Use textbbox to calculate text dimensions.
+        bbox = draw.textbbox((0,0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        x = (image.width - text_width) / 2
+        y = image.height - text_height - 20
+        draw.text((x, y), text, font=font, fill=font_color)
+        combined = Image.alpha_composite(image, txt_overlay)
+        base, _ = os.path.splitext(os.path.basename(image_path))
+        new_filename = f"overlay_{base}.{output_format}"
+        combined.convert("RGB").save(new_filename)
+        logger.info(f"Overlay image saved as {new_filename}")
+        return new_filename
+    except Exception as e:
+        logger.error("Error overlaying text: %s", e)
+        st.error("Failed to apply text overlay.")
+        return image_path
+
+# ------------------------------------------------------------------------------
 # Main Application UI with Sidebar Controls
 def main():
     st.title("Marketing Content Generator")
@@ -343,9 +373,9 @@ def main():
     with st.sidebar:
         st.header("Settings")
         task_type = st.selectbox("Select Task Type:", options=[
-            "Generate Ad",
-            "Upload Sketch and Generate",
-            "Reference Image and Generate",
+            "Marketing Ad",
+            "Control Sketch",
+            "Control Structure",
             "Search and Recolor",
             "Search and Replace",
             "Replace Background and Relight",
@@ -355,11 +385,19 @@ def main():
         prompt = st.text_input("Prompt", "Introducing our new summer collection, vibrant, modern, eye-catching")
         seed = st.number_input("Seed", value=0, step=1)
         output_format = st.selectbox("Output Format", ["jpeg", "png", "webp"], index=0)
-        
-        # Option to reuse a previously generated image.
+        # Option to reuse previously generated image.
         use_previous = st.checkbox("Use Previously Generated Image", value=False)
         
-        if task_type == "Generate Ad":
+        # Overlay text settings (optional)
+        st.markdown("#### Overlay Settings (Optional)")
+        overlay_text = st.text_input("Overlay Text", "")
+        if overlay_text:
+            font_size = st.number_input("Font Size", min_value=10, max_value=200, value=40, step=1)
+            font_color = st.color_picker("Font Color", value="#FFFFFF")
+        else:
+            font_size, font_color = None, None
+        
+        if task_type == "Marketing Ad":
             negative_prompt = st.text_input("Negative Prompt", "")
             aspect_ratio = st.selectbox("Aspect Ratio", ["21:9", "16:9", "3:2", "5:4", "1:1"], index=2)
             size = st.selectbox("Image Size", ["256x256", "512x512", "1024x1024"], index=2)
@@ -369,8 +407,8 @@ def main():
                     if filename:
                         st.session_state.generated_image = filename
 
-        elif task_type == "Upload Sketch and Generate":
-            control_strength = st.slider("Control Strength", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
+        elif task_type == "Control Sketch":
+            control_strength = st.slider("Control Strength", 0.0, 1.0, 0.7, 0.05)
             negative_prompt = st.text_input("Negative Prompt", "")
             if use_previous and "generated_image" in st.session_state:
                 sketch_file = open(st.session_state.generated_image, "rb")
@@ -385,8 +423,8 @@ def main():
                         if filename:
                             st.session_state.generated_image = filename
 
-        elif task_type == "Reference Image and Generate":
-            control_strength = st.slider("Control Strength", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
+        elif task_type == "Control Structure":
+            control_strength = st.slider("Control Strength", 0.0, 1.0, 0.7, 0.05)
             negative_prompt = st.text_input("Negative Prompt", "")
             if use_previous and "generated_image" in st.session_state:
                 structure_file = open(st.session_state.generated_image, "rb")
@@ -438,11 +476,11 @@ def main():
             background_prompt = st.text_input("Background Prompt", "pastel landscape")
             foreground_prompt = st.text_input("Foreground Prompt", "")
             negative_prompt = st.text_input("Negative Prompt", "")
-            preserve_original_subject = st.slider("Preserve Original Subject", 0.0, 1.0, 0.6, step=0.05)
-            original_background_depth = st.slider("Original Background Depth", 0.0, 1.0, 0.5, step=0.05)
+            preserve_original_subject = st.slider("Preserve Original Subject", 0.0, 1.0, 0.6, 0.05)
+            original_background_depth = st.slider("Original Background Depth", 0.0, 1.0, 0.5, 0.05)
             keep_original_background = st.checkbox("Keep Original Background")
             light_source_direction = st.selectbox("Light Source Direction", ["none", "left", "right", "above", "below"], index=0)
-            light_source_strength = st.slider("Light Source Strength", 0.0, 1.0, 0.3, step=0.05) if light_source_direction != "none" else None
+            light_source_strength = st.slider("Light Source Strength", 0.0, 1.0, 0.3, 0.05) if light_source_direction != "none" else None
             if use_previous and "generated_image" in st.session_state:
                 subject_image_file = open(st.session_state.generated_image, "rb")
             else:
@@ -465,7 +503,7 @@ def main():
                             st.session_state.generated_image = filename
 
         elif task_type == "Upscale Creative":
-            creativity = st.number_input("Creativity", min_value=0.0, max_value=1.0, value=0.30, step=0.01)
+            creativity = st.number_input("Creativity", 0.0, 1.0, 0.30, 0.01)
             negative_prompt = st.text_input("Negative Prompt", "")
             if use_previous and "generated_image" in st.session_state:
                 up_image_file = open(st.session_state.generated_image, "rb")
@@ -483,11 +521,20 @@ def main():
     # Main Output Display Area.
     st.markdown("## Output Image")
     if "generated_image" in st.session_state:
-        st.image(st.session_state.generated_image, caption="Result", use_column_width=True)
+        output_img_path = st.session_state.generated_image
+
+        # If overlay text is provided, apply it.
+        if overlay_text:
+            try:
+                output_img_path = overlay_text_on_image(output_img_path, overlay_text, int(font_size), font_color, output_format)
+            except Exception as e:
+                st.error("Failed to apply text overlay.")
+
+        st.image(output_img_path, caption="Result", use_column_width=True)
         try:
-            with open(st.session_state.generated_image, "rb") as f:
+            with open(output_img_path, "rb") as f:
                 image_bytes = f.read()
-            st.download_button(label="Download Result Image", data=image_bytes, file_name=os.path.basename(st.session_state.generated_image), mime="image/png")
+            st.download_button(label="Download Result Image", data=image_bytes, file_name=os.path.basename(output_img_path), mime="image/png")
         except Exception as e:
             st.error("Unable to prepare download for the result image.")
 
