@@ -1,136 +1,495 @@
 import streamlit as st
-import openai
-from openai import OpenAI
 import io
 import logging
 import time
 from PIL import Image
 import requests
+import os
+import json
+from dotenv import load_dotenv
+
+# Load environment variables from .env (if present) or from Streamlit secrets.
+load_dotenv()
+STABILITY_KEY = os.getenv("STABILITY_KEY") or (st.secrets.get("STABILITY_KEY") if st.secrets else None)
+
+if not STABILITY_KEY:
+    st.error("Stability AI key not found. Please set it in your environment or in .streamlit/secrets.toml.")
+    st.stop()
 
 # ------------------------------------------------------------------------------
 # Configure Logging
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s", 
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# Set OpenAI API Key (ensure it's in your .streamlit/secrets.toml or environment variables)
-if "OPENAI_API_KEY" in st.secrets:
-    openai.api_key = st.secrets["OPENAI_API_KEY"]
-else:
-    st.error("OpenAI API key not found in secrets. Please add 'OPENAI_API_KEY' to your secrets.")
-    st.stop()
-
-# ------------------------------------------------------------------------------
-# Instantiate the OpenAI client.
-try:
-    client = OpenAI()
-except Exception as e:
-    logger.error("Failed to instantiate OpenAI client: %s", e)
-    st.error("Failed to instantiate OpenAI client. Please check your configuration.")
-    st.stop()
-
-# ------------------------------------------------------------------------------
-# Generate a marketing ad image using OpenAI's Text-to-Image API (DALL‑E‑3).
-def generate_marketing_ad_openai(prompt: str, size: str = "1024x1024") -> str:
+# Helper to get file data regardless of object type.
+def get_file_data(file_obj):
     """
-    Calls OpenAI's image generation endpoint (using DALL‑E‑3) to produce an image based on the prompt.
-    Returns the URL of the generated image.
+    Returns the bytes of the file object. If the object has a getvalue() method (as
+    in uploaded files), it is used; otherwise, file_obj.read() is used.
     """
     try:
-        response = client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size=size,
-            quality="standard",
-            n=1,
+        return file_obj.getvalue()
+    except AttributeError:
+        return file_obj.read()
+
+# ------------------------------------------------------------------------------
+# REST Request Helpers
+def send_generation_request(host, params, files=None):
+    """
+    Synchronously sends a REST request to a Stability AI endpoint.
+    """
+    headers = {
+        "Accept": "image/*",
+        "Authorization": f"Bearer {STABILITY_KEY}"
+    }
+    if files is None:
+        files = {}
+    # Process file parameters: if the parameter is a filename, open it; otherwise use the file object.
+    image = params.pop("image", None)
+    mask = params.pop("mask", None)
+    if image is not None and image != '':
+        if isinstance(image, str):
+            files["image"] = open(image, 'rb')
+        else:
+            files["image"] = image
+    if mask is not None and mask != '':
+        if isinstance(mask, str):
+            files["mask"] = open(mask, 'rb')
+        else:
+            files["mask"] = mask
+    if len(files) == 0:
+        files["none"] = ''
+    logger.info(f"Sending request to Stability AI: {host}")
+    response = requests.post(host, headers=headers, files=files, data=params)
+    if not response.ok:
+        raise Exception(f"HTTP {response.status_code}: {response.text}")
+    return response
+
+def send_async_generation_request(host, params, files=None):
+    """
+    Sends an asynchronous REST request and polls for the final result.
+    """
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {STABILITY_KEY}"
+    }
+    if files is None:
+        files = {}
+    image = params.pop("image", None)
+    mask = params.pop("mask", None)
+    if image is not None and image != '':
+        if hasattr(image, "getvalue"):
+            files["image"] = image
+        else:
+            files["image"] = image
+    if mask is not None and mask != '':
+        files["mask"] = mask
+    if len(files) == 0:
+        files["none"] = ''
+    st.write(f"Sending async request to {host}...")
+    response = requests.post(host, headers=headers, files=files, data=params)
+    if not response.ok:
+        raise Exception(f"HTTP {response.status_code}: {response.text}")
+    response_dict = response.json()
+    generation_id = response_dict.get("id", None)
+    if generation_id is None:
+        raise Exception("Expected id in async response")
+    timeout = int(os.getenv("WORKER_TIMEOUT", 500))
+    start = time.time()
+    while True:
+        poll_response = requests.get(
+            f"https://api.stability.ai/v2beta/results/{generation_id}",
+            headers={**headers, "Accept": "*/*"}
         )
-        image_url = response.data[0].url
-        logger.info("Successfully generated marketing image: %s", image_url)
-        return image_url
+        if not poll_response.ok:
+            raise Exception(f"HTTP {poll_response.status_code}: {poll_response.text}")
+        if poll_response.status_code != 202:
+            break
+        time.sleep(10)
+        if time.time() - start > timeout:
+            raise Exception(f"Timeout after {timeout} seconds")
+    return poll_response
+
+# ------------------------------------------------------------------------------
+# Feature Functions
+
+def generate_marketing_ad_stability(prompt: str, negative_prompt: str, aspect_ratio: str, seed: int, output_format: str, size: str="1024x1024") -> str:
+    """Generate a marketing ad using the ultra endpoint."""
+    host = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
+    params = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "aspect_ratio": aspect_ratio,
+        "seed": seed,
+        "output_format": output_format,
+        "size": size
+    }
+    try:
+        response = send_generation_request(host, params)
+        image_bytes = response.content
+        filename = f"stability_generated_{seed}.{output_format}"
+        with open(filename, "wb") as f:
+            f.write(image_bytes)
+        logger.info(f"Marketing ad generated and saved as {filename}")
+        return filename
     except Exception as e:
-        logger.error("Error generating image: %s", e)
-        st.error("Failed to generate image. Please try again.")
+        logger.error("Marketing ad generation error: %s", e)
+        st.error("Failed to generate marketing ad with Stability AI.")
+        return None
+
+def generate_control_sketch_stability(prompt: str, negative_prompt: str, control_strength: float, seed: int, output_format: str, sketch_file) -> str:
+    """Generate image from a sketch using the control/sketch endpoint."""
+    host = "https://api.stability.ai/v2beta/stable-image/control/sketch"
+    params = {
+        "control_strength": control_strength,
+        "seed": seed,
+        "output_format": output_format,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "image": "temp_sketch.png"
+    }
+    try:
+        sketch_bytes = get_file_data(sketch_file)
+        temp_filename = f"temp_sketch_{seed}.png"
+        with open(temp_filename, "wb") as f:
+            f.write(sketch_bytes)
+        params["image"] = temp_filename
+        response = send_generation_request(host, params)
+        image_bytes = response.content
+        result_filename = f"control_sketch_{seed}.{output_format}"
+        with open(result_filename, "wb") as f:
+            f.write(image_bytes)
+        logger.info(f"Control Sketch result saved as {result_filename}")
+        return result_filename
+    except Exception as e:
+        logger.error("Control Sketch error: %s", e)
+        st.error("Failed to generate Control Sketch image.")
+        return None
+
+def generate_control_structure_stability(prompt: str, negative_prompt: str, control_strength: float, seed: int, output_format: str, structure_file) -> str:
+    """Generate image from a structure image using the control/structure endpoint."""
+    host = "https://api.stability.ai/v2beta/stable-image/control/structure"
+    params = {
+        "control_strength": control_strength,
+        "seed": seed,
+        "output_format": output_format,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "image": "temp_structure.png"
+    }
+    try:
+        structure_bytes = get_file_data(structure_file)
+        temp_filename = f"temp_structure_{seed}.png"
+        with open(temp_filename, "wb") as f:
+            f.write(structure_bytes)
+        params["image"] = temp_filename
+        response = send_generation_request(host, params)
+        image_bytes = response.content
+        result_filename = f"control_structure_{seed}.{output_format}"
+        with open(result_filename, "wb") as f:
+            f.write(image_bytes)
+        logger.info(f"Control Structure result saved as {result_filename}")
+        return result_filename
+    except Exception as e:
+        logger.error("Control Structure error: %s", e)
+        st.error("Failed to generate Control Structure image.")
+        return None
+
+def generate_search_and_recolor(image_file, prompt: str, select_prompt: str, negative_prompt: str, grow_mask: int, seed: int, output_format: str) -> str:
+    """Generate image using the search-and-recolor endpoint."""
+    host = "https://api.stability.ai/v2beta/stable-image/edit/search-and-recolor"
+    temp_filename = f"temp_upload_{seed}.png"
+    image_bytes = get_file_data(image_file)
+    with open(temp_filename, "wb") as f:
+        f.write(image_bytes)
+    params = {
+        "grow_mask": grow_mask,
+        "seed": seed,
+        "mode": "search",
+        "output_format": output_format,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "select_prompt": select_prompt,
+        "image": temp_filename
+    }
+    try:
+        response = send_generation_request(host, params)
+        image_bytes = response.content
+        new_seed = response.headers.get("seed", seed)
+        edited_filename = f"edited_searchrecolor_{os.path.splitext(os.path.basename(temp_filename))[0]}_{new_seed}.{output_format}"
+        with open(edited_filename, "wb") as f:
+            f.write(image_bytes)
+        logger.info(f"Search and Recolor result saved as {edited_filename}")
+        return edited_filename
+    except Exception as e:
+        logger.error("Search and Recolor error: %s", e)
+        st.error("Failed to generate search and recolor image.")
+        return None
+
+def generate_search_and_replace(image_file, prompt: str, search_prompt: str, negative_prompt: str, seed: int, output_format: str) -> str:
+    """Generate image using the search-and-replace endpoint."""
+    host = "https://api.stability.ai/v2beta/stable-image/edit/search-and-replace"
+    temp_filename = f"temp_upload_{seed}.png"
+    image_bytes = get_file_data(image_file)
+    with open(temp_filename, "wb") as f:
+        f.write(image_bytes)
+    params = {
+        "seed": seed,
+        "mode": "search",
+        "output_format": output_format,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "search_prompt": search_prompt,
+        "image": temp_filename
+    }
+    try:
+        response = send_generation_request(host, params)
+        image_bytes = response.content
+        new_seed = response.headers.get("seed", seed)
+        edited_filename = f"edited_searchreplace_{os.path.splitext(os.path.basename(temp_filename))[0]}_{new_seed}.{output_format}"
+        with open(edited_filename, "wb") as f:
+            f.write(image_bytes)
+        logger.info(f"Search and Replace result saved as {edited_filename}")
+        return edited_filename
+    except Exception as e:
+        logger.error("Search and Replace error: %s", e)
+        st.error("Failed to generate search and replace image.")
+        return None
+
+def generate_replace_background_and_relight(subject_image_file, background_prompt: str, background_reference_file, foreground_prompt: str, negative_prompt: str, preserve_original_subject: float, original_background_depth: float, keep_original_background: bool, light_source_strength: float, light_reference_file, light_source_direction: str, seed: int, output_format: str) -> str:
+    """Generate image using the replace-background-and-relight endpoint."""
+    host = "https://api.stability.ai/v2beta/stable-image/edit/replace-background-and-relight"
+    subject_bytes = get_file_data(subject_image_file)
+    subject_filename = f"temp_subject_{seed}.png"
+    with open(subject_filename, "wb") as f:
+        f.write(subject_bytes)
+    files = {"subject_image": open(subject_filename, "rb")}
+    if background_reference_file:
+        bg_bytes = get_file_data(background_reference_file)
+        bg_filename = f"temp_bg_{seed}.png"
+        with open(bg_filename, "wb") as f:
+            f.write(bg_bytes)
+        files["background_reference"] = open(bg_filename, "rb")
+    if light_reference_file:
+        light_bytes = get_file_data(light_reference_file)
+        light_filename = f"temp_light_{seed}.png"
+        with open(light_filename, "wb") as f:
+            f.write(light_bytes)
+        files["light_reference"] = open(light_filename, "rb")
+    
+    params = {
+        "output_format": output_format,
+        "background_prompt": background_prompt,
+        "foreground_prompt": foreground_prompt,
+        "negative_prompt": negative_prompt,
+        "preserve_original_subject": preserve_original_subject,
+        "original_background_depth": original_background_depth,
+        "keep_original_background": keep_original_background,
+        "seed": seed
+    }
+    if light_source_direction != "none":
+        params["light_source_direction"] = light_source_direction
+    if light_source_direction != "none" or (light_reference_file is not None):
+        params["light_source_strength"] = light_source_strength
+    try:
+        response = send_async_generation_request(host, params, files=files)
+        image_bytes = response.content
+        new_seed = response.headers.get("seed", seed)
+        base_name = os.path.splitext(os.path.basename(subject_filename))[0]
+        edited_filename = f"edited_replacebg_{base_name}_{new_seed}.{output_format}"
+        with open(edited_filename, "wb") as f:
+            f.write(image_bytes)
+        logger.info(f"Replace Background and Relight result saved as {edited_filename}")
+        return edited_filename
+    except Exception as e:
+        logger.error("Replace Background and Relight error: %s", e)
+        st.error("Failed to generate replace background and relight image.")
+        return None
+
+def generate_upscale_creative(prompt: str, negative_prompt: str, creativity: float, seed: int, output_format: str, up_image_file) -> str:
+    """Generate an upscaled creative image asynchronously."""
+    host = "https://api.stability.ai/v2beta/stable-image/upscale/creative"
+    params = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "seed": seed,
+        "creativity": creativity,
+        "output_format": output_format
+    }
+    try:
+        response = send_async_generation_request(host, {**params, "image": up_image_file})
+        image_bytes = response.content
+        filename = f"upscaled_creative_{seed}.{output_format}"
+        with open(filename, "wb") as f:
+            f.write(image_bytes)
+        logger.info(f"Upscaled creative image saved as {filename}")
+        return filename
+    except Exception as e:
+        logger.error("Upscale Creative error: %s", e)
+        st.error("Failed to upscale image creatively.")
         return None
 
 # ------------------------------------------------------------------------------
-# Create image variations using OpenAI's DALL-E 2 variation endpoint.
-def create_image_variations_openai(input_image: Image.Image, n: int, size: str = "1024x1024") -> list:
-    """
-    Converts the input image into PNG bytes and sends it to OpenAI's image variation endpoint.
-    Returns a list of URLs for the generated variations.
-    """
-    try:
-        # Convert the input image into a PNG bytes buffer.
-        img_buffer = io.BytesIO()
-        input_image.save(img_buffer, format="PNG")
-        img_buffer.seek(0)
-        
-        response = client.images.create_variation(
-            model="dall-e-2",
-            image=img_buffer,
-            n=n,
-            size=size,
-        )
-        urls = [item.url for item in response.data]
-        logger.info("Successfully created %s image variation(s): %s", n, urls)
-        return urls
-    except Exception as e:
-        logger.error("Error creating image variations: %s", e)
-        st.error("Failed to create image variations. Please try again.")
-        return []
-
-# ------------------------------------------------------------------------------
-# Main application function.
+# Main Application UI with Sidebar Controls
 def main():
-    st.title("Image Generation & Variation with OpenAI API")
+    st.title("Marketing Content Generator")
+    st.markdown("## Enjoy a spacious view of your creative outputs!")
     
-    mode = st.selectbox("Select Mode", [
-        "Generate Marketing Ad & Variations"
-    ])
+    # Sidebar: Task type selection and inputs.
+    with st.sidebar:
+        st.header("Settings")
+        task_type = st.selectbox("Select Task Type:", options=[
+            "Generate Ad",
+            "Upload Sketch and Generate",
+            "Reference Image and Generate",
+            "Search and Recolor",
+            "Search and Replace",
+            "Replace Background and Relight",
+            "Upscale Creative"
+        ])
+        st.markdown("#### Common Inputs")
+        prompt = st.text_input("Prompt", "Introducing our new summer collection, vibrant, modern, eye-catching")
+        seed = st.number_input("Seed", value=0, step=1)
+        output_format = st.selectbox("Output Format", ["jpeg", "png", "webp"], index=0)
+        
+        # Option to reuse a previously generated image.
+        use_previous = st.checkbox("Use Previously Generated Image", value=False)
+        
+        if task_type == "Generate Ad":
+            negative_prompt = st.text_input("Negative Prompt", "")
+            aspect_ratio = st.selectbox("Aspect Ratio", ["21:9", "16:9", "3:2", "5:4", "1:1"], index=2)
+            size = st.selectbox("Image Size", ["256x256", "512x512", "1024x1024"], index=2)
+            if st.button("Generate Marketing Ad"):
+                with st.spinner("Generating marketing ad..."):
+                    filename = generate_marketing_ad_stability(prompt, negative_prompt, aspect_ratio, seed, output_format, size)
+                    if filename:
+                        st.session_state.generated_image = filename
 
-    if mode == "Generate Marketing Ad & Variations":
-        st.header("Marketing Ad Generator")
-        prompt = st.text_input(
-            "Marketing Prompt",
-            value="Introducing our new summer collection, vibrant, modern, eye-catching"
-        )
-        size = st.selectbox(
-            "Image Size",
-            ["256x256", "512x512", "1024x1024"],
-            index=2  # default to 1024x1024
-        )
-        
-        # Generate the marketing ad image.
-        if st.button("Generate Marketing Ad"):
-            with st.spinner("Generating marketing ad via OpenAI..."):
-                image_url = generate_marketing_ad_openai(prompt, size)
-                if image_url:
-                    st.image(image_url, caption="Generated Marketing Ad", use_column_width=True)
-                    st.session_state.generated_image_url = image_url
-        
-        # If an image was generated, offer to generate variations.
-        if "generated_image_url" in st.session_state:
-            st.subheader("Generate Variations of the Generated Ad")
-            n_variations = st.number_input("Number of Variations", min_value=1, max_value=8, value=1, step=1)
-            if st.button("Generate Variations"):
-                with st.spinner("Generating image variations via OpenAI..."):
-                    # Download the generated image from its URL.
-                    try:
-                        response = requests.get(st.session_state.generated_image_url)
-                        base_image = Image.open(io.BytesIO(response.content)).convert("RGB")
-                    except Exception as e:
-                        logger.error("Error downloading generated image: %s", e)
-                        st.error("Failed to download the generated image for variations.")
-                        return
-                    # Create variations.
-                    variation_urls = create_image_variations_openai(base_image, n_variations, size)
-                    if variation_urls:
-                        st.markdown("### Variations")
-                        for idx, url in enumerate(variation_urls):
-                            st.image(url, caption=f"Variation {idx+1}", use_column_width=True)
+        elif task_type == "Upload Sketch and Generate":
+            control_strength = st.slider("Control Strength", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
+            negative_prompt = st.text_input("Negative Prompt", "")
+            if use_previous and "generated_image" in st.session_state:
+                sketch_file = open(st.session_state.generated_image, "rb")
+            else:
+                sketch_file = st.file_uploader("Upload Sketch Image", type=["jpg", "jpeg", "png"])
+            if st.button("Generate Control Sketch"):
+                if not sketch_file:
+                    st.error("Please provide a sketch image or use a previously generated image.")
+                else:
+                    with st.spinner("Generating Control Sketch..."):
+                        filename = generate_control_sketch_stability(prompt, negative_prompt, control_strength, seed, output_format, sketch_file)
+                        if filename:
+                            st.session_state.generated_image = filename
+
+        elif task_type == "Reference Image and Generate":
+            control_strength = st.slider("Control Strength", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
+            negative_prompt = st.text_input("Negative Prompt", "")
+            if use_previous and "generated_image" in st.session_state:
+                structure_file = open(st.session_state.generated_image, "rb")
+            else:
+                structure_file = st.file_uploader("Upload Structure Image", type=["jpg", "jpeg", "png"])
+            if st.button("Generate Control Structure"):
+                if not structure_file:
+                    st.error("Please provide a structure image or use a previously generated image.")
+                else:
+                    with st.spinner("Generating Control Structure..."):
+                        filename = generate_control_structure_stability(prompt, negative_prompt, control_strength, seed, output_format, structure_file)
+                        if filename:
+                            st.session_state.generated_image = filename
+
+        elif task_type == "Search and Recolor":
+            select_prompt = st.text_input("Select Prompt", "chicken")
+            negative_prompt = st.text_input("Negative Prompt", "")
+            if use_previous and "generated_image" in st.session_state:
+                image_file = open(st.session_state.generated_image, "rb")
+            else:
+                image_file = st.file_uploader("Upload Image for Recolor", type=["jpg", "jpeg", "png"])
+            grow_mask = st.number_input("Grow Mask", min_value=1, value=3, step=1)
+            if st.button("Generate Search and Recolor"):
+                if not image_file:
+                    st.error("Please provide an image for search and recolor.")
+                else:
+                    with st.spinner("Generating Search and Recolor..."):
+                        filename = generate_search_and_recolor(image_file, prompt, select_prompt, negative_prompt, grow_mask, seed, output_format)
+                        if filename:
+                            st.session_state.generated_image = filename
+
+        elif task_type == "Search and Replace":
+            search_prompt = st.text_input("Search Prompt", "chicken")
+            negative_prompt = st.text_input("Negative Prompt", "")
+            if use_previous and "generated_image" in st.session_state:
+                image_file = open(st.session_state.generated_image, "rb")
+            else:
+                image_file = st.file_uploader("Upload Image for Search and Replace", type=["jpg", "jpeg", "png"])
+            if st.button("Generate Search and Replace"):
+                if not image_file:
+                    st.error("Please provide an image for search and replace.")
+                else:
+                    with st.spinner("Generating Search and Replace..."):
+                        filename = generate_search_and_replace(image_file, prompt, search_prompt, negative_prompt, seed, output_format)
+                        if filename:
+                            st.session_state.generated_image = filename
+
+        elif task_type == "Replace Background and Relight":
+            background_prompt = st.text_input("Background Prompt", "pastel landscape")
+            foreground_prompt = st.text_input("Foreground Prompt", "")
+            negative_prompt = st.text_input("Negative Prompt", "")
+            preserve_original_subject = st.slider("Preserve Original Subject", 0.0, 1.0, 0.6, step=0.05)
+            original_background_depth = st.slider("Original Background Depth", 0.0, 1.0, 0.5, step=0.05)
+            keep_original_background = st.checkbox("Keep Original Background")
+            light_source_direction = st.selectbox("Light Source Direction", ["none", "left", "right", "above", "below"], index=0)
+            light_source_strength = st.slider("Light Source Strength", 0.0, 1.0, 0.3, step=0.05) if light_source_direction != "none" else None
+            if use_previous and "generated_image" in st.session_state:
+                subject_image_file = open(st.session_state.generated_image, "rb")
+            else:
+                subject_image_file = st.file_uploader("Upload Subject Image", type=["jpg", "jpeg", "png"])
+            background_reference_file = st.file_uploader("Upload Background Reference (Optional)", type=["jpg", "jpeg", "png"])
+            light_reference_file = st.file_uploader("Upload Light Reference (Optional)", type=["jpg", "jpeg", "png"])
+            if st.button("Generate Replace Background and Relight"):
+                if not subject_image_file:
+                    st.error("Please provide a subject image for replace background and relight.")
+                else:
+                    with st.spinner("Generating Replace Background and Relight..."):
+                        filename = generate_replace_background_and_relight(
+                            subject_image_file, background_prompt, background_reference_file,
+                            foreground_prompt, negative_prompt, preserve_original_subject,
+                            original_background_depth, keep_original_background,
+                            light_source_strength if light_source_strength is not None else 0,
+                            light_reference_file, light_source_direction, seed, output_format
+                        )
+                        if filename:
+                            st.session_state.generated_image = filename
+
+        elif task_type == "Upscale Creative":
+            creativity = st.number_input("Creativity", min_value=0.0, max_value=1.0, value=0.30, step=0.01)
+            negative_prompt = st.text_input("Negative Prompt", "")
+            if use_previous and "generated_image" in st.session_state:
+                up_image_file = open(st.session_state.generated_image, "rb")
+            else:
+                up_image_file = st.file_uploader("Upload Image to Upscale", type=["jpg", "jpeg", "png"])
+            if st.button("Generate Upscale Creative"):
+                if not up_image_file:
+                    st.error("Please provide an image to upscale.")
+                else:
+                    with st.spinner("Generating Upscale Creative..."):
+                        filename = generate_upscale_creative(prompt, negative_prompt, creativity, seed, output_format, up_image_file)
+                        if filename:
+                            st.session_state.generated_image = filename
+
+    # Main Output Display Area.
+    st.markdown("## Output Image")
+    if "generated_image" in st.session_state:
+        st.image(st.session_state.generated_image, caption="Result", use_column_width=True)
+        try:
+            with open(st.session_state.generated_image, "rb") as f:
+                image_bytes = f.read()
+            st.download_button(label="Download Result Image", data=image_bytes, file_name=os.path.basename(st.session_state.generated_image), mime="image/png")
+        except Exception as e:
+            st.error("Unable to prepare download for the result image.")
 
 if __name__ == "__main__":
     main()
