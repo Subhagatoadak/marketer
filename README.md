@@ -5,7 +5,9 @@
 Marketer is a cutting-edge AI-powered application designed to help creative professionals effortlessly generate and edit stunning marketing visuals. Built with Streamlit and integrated with Stability AI, Marketer enables rapid image creation, advanced editing, and customizable text overlays, empowering you to bring your marketing campaigns to life in minutes.
 
 <img width="1424" alt="Screenshot 2025-04-11 at 1 54 21 AM" src="https://github.com/user-attachments/assets/ad311a9d-5ff0-4f90-a68c-4e5ae5185a03" />
+
 ![stability_generated_0](https://github.com/user-attachments/assets/cc0b7589-1b83-418a-bb3a-2990aefc3c82)
+
 ![edited_searchrecolor_temp_upload_0_1020784302](https://github.com/user-attachments/assets/0d507c9d-df0f-4345-bb1f-ccc47bcef183)
 
 ---
