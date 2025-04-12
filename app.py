@@ -9,7 +9,6 @@ import json
 from dotenv import load_dotenv
 import base64
 import streamlit.components.v1 as components
-from streamlit_drawable_canvas import st_canvas
 
 # Load environment variables from .env (if present) or from Streamlit secrets.
 load_dotenv()
@@ -22,13 +21,13 @@ if not STABILITY_KEY:
 # ------------------------------------------------------------------------------
 # Configure Logging
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s", 
+    format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# Helper: Get file data regardless of type.
+# Helper to get file data.
 def get_file_data(file_obj):
     try:
         return file_obj.getvalue()
@@ -49,18 +48,18 @@ def send_generation_request(host, params, files=None):
         files = {}
     image = params.pop("image", None)
     mask = params.pop("mask", None)
-    if image is not None and image != '':
+    if image is not None and image != "":
         if isinstance(image, str):
-            files["image"] = open(image, 'rb')
+            files["image"] = open(image, "rb")
         else:
             files["image"] = image
-    if mask is not None and mask != '':
+    if mask is not None and mask != "":
         if isinstance(mask, str):
-            files["mask"] = open(mask, 'rb')
+            files["mask"] = open(mask, "rb")
         else:
             files["mask"] = mask
     if len(files) == 0:
-        files["none"] = ''
+        files["none"] = ""
     logger.info(f"Sending request to Stability AI: {host}")
     response = requests.post(host, headers=headers, files=files, data=params)
     if not response.ok:
@@ -79,15 +78,15 @@ def send_async_generation_request(host, params, files=None):
         files = {}
     image = params.pop("image", None)
     mask = params.pop("mask", None)
-    if image is not None and image != '':
+    if image is not None and image != "":
         if hasattr(image, "getvalue"):
             files["image"] = image
         else:
             files["image"] = image
-    if mask is not None and mask != '':
+    if mask is not None and mask != "":
         files["mask"] = mask
     if len(files) == 0:
-        files["none"] = ''
+        files["none"] = ""
     st.write(f"Sending async request to {host}...")
     response = requests.post(host, headers=headers, files=files, data=params)
     if not response.ok:
@@ -113,10 +112,9 @@ def send_async_generation_request(host, params, files=None):
     return poll_response
 
 # ------------------------------------------------------------------------------
-# Feature Functions (Stability AI endpoints)
-
+# Feature Functions
 def generate_marketing_ad_stability(prompt: str, negative_prompt: str, aspect_ratio: str, seed: int, output_format: str, size: str="1024x1024") -> str:
-    """Generate a marketing ad using the 'ultra' endpoint."""
+    """Generate a marketing ad using the ultra endpoint."""
     host = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
     params = {
         "prompt": prompt,
@@ -332,53 +330,108 @@ def generate_upscale_creative(prompt: str, negative_prompt: str, creativity: flo
         return None
 
 # ------------------------------------------------------------------------------
-# New: Function to overlay text onto an image using an editable text box via JS.
-def editable_text_overlay(image_path: str, initial_text: str, font_size: int, font_color: str, output_format: str) -> None:
-    """
-    Renders an HTML component with the image in the background and a contentEditable
-    div overlaid. The user can edit the text directly.
-    """
+# New: Function to generate editable overlay HTML with draggable, resizable textbox,
+# with customizable font and border options.
+def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int, font_color: str, font_type: str,
+                              font_weight: str, font_style: str, border_weight: int, border_color: str,
+                              output_format: str) -> str:
     try:
         with open(image_path, "rb") as img_file:
             img_bytes = img_file.read()
         img_b64 = base64.b64encode(img_bytes).decode()
-        
-        # Create an HTML snippet that overlays an editable text box
+        # Determine border CSS.
+        if border_weight == 0:
+            border_css = "none"
+        else:
+            border_css = f"{border_weight}px solid {border_color}"
         html_code = f"""
         <html>
         <head>
           <style>
             .container {{
               position: relative;
-              text-align: center;
-              color: {font_color};
+              width: 100%;
             }}
-            .overlay {{
+            .overlay-image {{
+              width: 100%;
+            }}
+            .editable-text {{
               position: absolute;
               bottom: 20px;
               left: 50%;
               transform: translateX(-50%);
               font-size: {font_size}px;
-              font-family: Arial, sans-serif;
-              font-weight: bold;
+              font-family: {font_type};
+              font-weight: {font_weight};
+              font-style: {font_style};
+              color: {font_color};
               text-shadow: 2px 2px 4px #000000;
               background: transparent;
+              resize: both;
+              overflow: auto;
+              padding: 5px;
+              cursor: move;
+              border: {border_css};
             }}
           </style>
         </head>
         <body>
-          <div class="container">
-            <img src="data:image/{output_format};base64,{img_b64}" style="width:100%;">
-            <div class="overlay" contenteditable="true">{initial_text}</div>
+          <div class="container" id="container">
+            <img class="overlay-image" src="data:image/{output_format};base64,{img_b64}">
+            <div class="editable-text" id="editable-text" contenteditable="false">{overlay_text}</div>
           </div>
+          <button id="download-btn" style="margin-top:10px;padding:10px 20px;background-color:#0073b1;color:#fff;border:none;border-radius:5px;cursor:pointer;">Download Overlayed Image</button>
+          <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+          <script>
+            const editableText = document.getElementById('editable-text');
+            let isDragging = false;
+            editableText.addEventListener('mousedown', function(e) {{
+                isDragging = true;
+                let shiftX = e.clientX - editableText.getBoundingClientRect().left;
+                let shiftY = e.clientY - editableText.getBoundingClientRect().top;
+                function onMouseMove(e) {{
+                    if (isDragging) {{
+                        editableText.style.left = (e.pageX - shiftX) + 'px';
+                        editableText.style.top = (e.pageY - shiftY) + 'px';
+                    }}
+                }}
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', function() {{
+                    isDragging = false;
+                    document.removeEventListener('mousemove', onMouseMove);
+                }}, {{ once: true }});
+            }});
+            editableText.ondragstart = function() {{
+                return false;
+            }};
+            // Toggle edit mode on double-click. When editable, add a dashed border.
+            editableText.addEventListener('dblclick', function(e) {{
+                if (editableText.contentEditable === "false") {{
+                    editableText.contentEditable = "true";
+                    editableText.style.border = "1px dashed #fff";
+                }} else {{
+                    editableText.contentEditable = "false";
+                    editableText.style.border = "{border_css}";
+                }}
+            }});
+            // Download the overlayed image using html2canvas.
+            document.getElementById('download-btn').addEventListener('click', function() {{
+                html2canvas(document.getElementById('container')).then(canvas => {{
+                    var link = document.createElement('a');
+                    link.download = 'overlay_result.png';
+                    link.href = canvas.toDataURL();
+                    link.click();
+                }});
+            }});
+          </script>
         </body>
         </html>
         """
-        # Render the HTML code as a component.
-        st.components.v1.html(html_code, height=600)
+        return html_code
     except Exception as e:
-        st.error("Editable overlay failed, please check.")
-        logger.error("Editable overlay error: %s", e)
+        st.error("Failed to generate editable overlay HTML.")
+        logger.error("Editable overlay HTML error: %s", e)
+        return ""
 
 # ------------------------------------------------------------------------------
 # Main Application UI with Sidebar Controls
@@ -386,7 +439,7 @@ def main():
     st.title("Marketing Content Generator")
     st.markdown("## Enjoy a spacious view of your creative outputs!")
     
-    # Sidebar: Task type selection and inputs.
+    # Sidebar: Task type and common inputs.
     with st.sidebar:
         st.header("Settings")
         task_type = st.selectbox("Select Task Type:", options=[
@@ -404,32 +457,27 @@ def main():
         output_format = st.selectbox("Output Format", ["jpeg", "png", "webp"], index=0)
         use_previous = st.checkbox("Use Previously Generated Image", value=False)
         
-        # Overlay text settings (optional)
-        st.markdown("#### Overlay Text Settings (Optional)")
-        overlay_text_input = st.text_input("Overlay Text", "")
-        if overlay_text_input:
-            font_size = st.number_input("Font Size", min_value=10, max_value=200, value=40, step=1)
-            font_color = st.color_picker("Font Color", value="#FFFFFF")
-        else:
-            font_size, font_color = None, None
+        # Editable overlay settings.
+        st.markdown("#### Editable Overlay Settings")
+        overlay_text_input = st.text_input("Overlay Text", "Your Ad Slogan Here")
+        font_type = st.selectbox("Font Type", options=["Arial", "Times New Roman", "Courier New", "Verdana", "Georgia"], index=0)
+        font_weight = st.selectbox("Font Weight", options=["normal", "bold"], index=0)
+        font_style = st.selectbox("Font Style", options=["normal", "italic", "bold italic"], index=0)
+        font_size = st.number_input("Font Size", min_value=10, max_value=200, value=40, step=1)
+        font_color = st.color_picker("Font Color", value="#FFFFFF")
+        border_weight = st.number_input("Border Weight", min_value=0, max_value=10, value=0, step=1)
+        border_color = st.color_picker("Border Color", value="#000000")
+        st.session_state.overlay_text = overlay_text_input
+        st.session_state.font_type = font_type
+        st.session_state.font_weight = font_weight
+        st.session_state.font_style = font_style
+        st.session_state.font_size = font_size
+        st.session_state.font_color = font_color
+        st.session_state.border_weight = border_weight
+        st.session_state.border_color = border_color
+        st.session_state.editable_overlay_js = True  # Always enabled.
         
-        # Option to enable editable text overlay (JS)
-        editable_overlay_js = st.checkbox("Editable Overlay (JS)", value=False)
-        
-        # Drawing overlay in sidebar
-        st.markdown("#### Drawing Overlay (Optional)")
-        drawing_mode = st.selectbox("Drawing Tool:", options=["freedraw", "line", "rect", "circle"], index=0)
-        stroke_width = st.slider("Stroke Width", 1, 25, 3)
-        stroke_color = st.color_picker("Stroke Color", "#ff0000")
-        canvas_result = st_canvas(
-            stroke_width=stroke_width,
-            stroke_color=stroke_color,
-            height=150,
-            drawing_mode=drawing_mode,
-            key="canvas_overlay",
-        )
-        
-        # Task-specific inputs:
+        # Task-specific inputs.
         if task_type == "Marketing Ad":
             negative_prompt = st.text_input("Negative Prompt", "")
             aspect_ratio = st.selectbox("Aspect Ratio", ["21:9", "16:9", "3:2", "5:4", "1:1"], index=2)
@@ -439,7 +487,7 @@ def main():
                     filename = generate_marketing_ad_stability(prompt, negative_prompt, aspect_ratio, seed, output_format, size)
                     if filename:
                         st.session_state.generated_image = filename
-
+        
         elif task_type == "Control Sketch":
             control_strength = st.slider("Control Strength", 0.0, 1.0, 0.7, 0.05)
             negative_prompt = st.text_input("Negative Prompt", "")
@@ -455,7 +503,7 @@ def main():
                         filename = generate_control_sketch_stability(prompt, negative_prompt, control_strength, seed, output_format, sketch_file)
                         if filename:
                             st.session_state.generated_image = filename
-
+        
         elif task_type == "Control Structure":
             control_strength = st.slider("Control Strength", 0.0, 1.0, 0.7, 0.05)
             negative_prompt = st.text_input("Negative Prompt", "")
@@ -471,7 +519,7 @@ def main():
                         filename = generate_control_structure_stability(prompt, negative_prompt, control_strength, seed, output_format, structure_file)
                         if filename:
                             st.session_state.generated_image = filename
-
+        
         elif task_type == "Search and Recolor":
             select_prompt = st.text_input("Select Prompt", "chicken")
             negative_prompt = st.text_input("Negative Prompt", "")
@@ -488,7 +536,7 @@ def main():
                         filename = generate_search_and_recolor(image_file, prompt, select_prompt, negative_prompt, grow_mask, seed, output_format)
                         if filename:
                             st.session_state.generated_image = filename
-
+        
         elif task_type == "Search and Replace":
             search_prompt = st.text_input("Search Prompt", "chicken")
             negative_prompt = st.text_input("Negative Prompt", "")
@@ -504,7 +552,7 @@ def main():
                         filename = generate_search_and_replace(image_file, prompt, search_prompt, negative_prompt, seed, output_format)
                         if filename:
                             st.session_state.generated_image = filename
-
+        
         elif task_type == "Replace Background and Relight":
             background_prompt = st.text_input("Background Prompt", "pastel landscape")
             foreground_prompt = st.text_input("Foreground Prompt", "")
@@ -534,7 +582,7 @@ def main():
                         )
                         if filename:
                             st.session_state.generated_image = filename
-
+        
         elif task_type == "Upscale Creative":
             creativity = st.number_input("Creativity", 0.0, 1.0, 0.30, 0.01)
             negative_prompt = st.text_input("Negative Prompt", "")
@@ -556,63 +604,32 @@ def main():
     if "generated_image" in st.session_state:
         output_img_path = st.session_state.generated_image
 
-        # Apply overlay text (if provided) using our standard overlay function.
-        if overlay_text and not editable_overlay_js:
-            try:
-                output_img_path = overlay_text_on_image(output_img_path, overlay_text, int(font_size), font_color, output_format)
-            except Exception as e:
-                st.error("Failed to apply text overlay.")
-        # If editable overlay (JS) is selected, display an HTML component with editable text.
-        if editable_overlay_js:
-            try:
-                # Convert the image to base64.
-                with open(output_img_path, "rb") as img_file:
-                    img_bytes = img_file.read()
-                img_b64 = base64.b64encode(img_bytes).decode()
-                html_code = f"""
-                <html>
-                <head>
-                  <style>
-                    .container {{
-                      position: relative;
-                      width: 100%;
-                    }}
-                    .overlay-image {{
-                      width: 100%;
-                    }}
-                    .editable-text {{
-                      position: absolute;
-                      bottom: 20px;
-                      left: 50%;
-                      transform: translateX(-50%);
-                      font-size: {font_size if font_size else 40}px;
-                      color: {font_color if font_color else "#FFFFFF"};
-                      text-shadow: 2px 2px 4px #000000;
-                      background-color: transparent;
-                    }}
-                  </style>
-                </head>
-                <body>
-                  <div class="container">
-                    <img class="overlay-image" src="data:image/{output_format};base64,{img_b64}">
-                    <div class="editable-text" contenteditable="true">{overlay_text}</div>
-                  </div>
-                </body>
-                </html>
-                """
-                st.components.v1.html(html_code, height=600)
-            except Exception as e:
-                st.error("Editable overlay failed, please check.")
-                logger.error("Editable overlay error: %s", e)
-        else:
-            st.image(output_img_path, caption="Result", use_column_width=True)
+        try:
+            html_code = get_editable_overlay_html(
+                output_img_path,
+                st.session_state.overlay_text,
+                st.session_state.font_size,
+                st.session_state.font_color,
+                st.session_state.font_type,
+                st.session_state.font_weight,
+                st.session_state.font_style,
+                st.session_state.border_weight,
+                st.session_state.border_color,
+                output_format
+            )
+            # Increase the component height to ensure the button is visible.
+            components.html(html_code, height=700)
+        except Exception as e:
+            st.error("Editable overlay failed, please check.")
+            logger.error("Editable overlay error: %s", e)
         
+        # In addition, provide a download button for the base generated image (if needed).
         try:
             with open(output_img_path, "rb") as f:
                 image_bytes = f.read()
-            st.download_button(label="Download Result Image", data=image_bytes, file_name=os.path.basename(output_img_path), mime="image/png")
+            st.download_button(label="Download Generated Image", data=image_bytes, file_name=os.path.basename(output_img_path), mime="image/png")
         except Exception as e:
-            st.error("Unable to prepare download for the result image.")
+            st.error("Unable to prepare download for the generated image.")
 
 if __name__ == "__main__":
     main()
