@@ -7,6 +7,9 @@ import requests
 import os
 import json
 from dotenv import load_dotenv
+import base64
+import streamlit.components.v1 as components
+from streamlit_drawable_canvas import st_canvas
 
 # Load environment variables from .env (if present) or from Streamlit secrets.
 load_dotenv()
@@ -25,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# Helper to get file data.
+# Helper: Get file data regardless of type.
 def get_file_data(file_obj):
     try:
         return file_obj.getvalue()
@@ -44,7 +47,6 @@ def send_generation_request(host, params, files=None):
     }
     if files is None:
         files = {}
-    # Process file parameters.
     image = params.pop("image", None)
     mask = params.pop("mask", None)
     if image is not None and image != '':
@@ -111,11 +113,11 @@ def send_async_generation_request(host, params, files=None):
     return poll_response
 
 # ------------------------------------------------------------------------------
-# Feature Functions
+# Feature Functions (Stability AI endpoints)
 
 def generate_marketing_ad_stability(prompt: str, negative_prompt: str, aspect_ratio: str, seed: int, output_format: str, size: str="1024x1024") -> str:
-    """Generate a marketing ad using the ultra endpoint."""
-    host = "https://api.stability.ai/v2beta/stable-image/generate/core"
+    """Generate a marketing ad using the 'ultra' endpoint."""
+    host = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
     params = {
         "prompt": prompt,
         "negative_prompt": negative_prompt,
@@ -330,38 +332,53 @@ def generate_upscale_creative(prompt: str, negative_prompt: str, creativity: flo
         return None
 
 # ------------------------------------------------------------------------------
-# New: Function to overlay text onto an image.
-def overlay_text_on_image(image_path: str, text: str, font_size: int, font_color: str, output_format: str) -> str:
+# New: Function to overlay text onto an image using an editable text box via JS.
+def editable_text_overlay(image_path: str, initial_text: str, font_size: int, font_color: str, output_format: str) -> None:
     """
-    Opens the image from the given path, overlays the specified text using the provided font size and color,
-    and saves the new image. Returns the filename of the new image.
+    Renders an HTML component with the image in the background and a contentEditable
+    div overlaid. The user can edit the text directly.
     """
     try:
-        image = Image.open(image_path).convert("RGBA")
-        txt_overlay = Image.new("RGBA", image.size, (255, 255, 255, 0))
-        draw = ImageDraw.Draw(txt_overlay)
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except Exception as e:
-            logger.warning("Could not load 'arial.ttf'; using default font. Exception: %s", e)
-            font = ImageFont.load_default()
-        # Use textbbox to calculate text dimensions.
-        bbox = draw.textbbox((0,0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        x = (image.width - text_width) / 2
-        y = image.height - text_height - 20
-        draw.text((x, y), text, font=font, fill=font_color)
-        combined = Image.alpha_composite(image, txt_overlay)
-        base, _ = os.path.splitext(os.path.basename(image_path))
-        new_filename = f"overlay_{base}.{output_format}"
-        combined.convert("RGB").save(new_filename)
-        logger.info(f"Overlay image saved as {new_filename}")
-        return new_filename
+        with open(image_path, "rb") as img_file:
+            img_bytes = img_file.read()
+        img_b64 = base64.b64encode(img_bytes).decode()
+        
+        # Create an HTML snippet that overlays an editable text box
+        html_code = f"""
+        <html>
+        <head>
+          <style>
+            .container {{
+              position: relative;
+              text-align: center;
+              color: {font_color};
+            }}
+            .overlay {{
+              position: absolute;
+              bottom: 20px;
+              left: 50%;
+              transform: translateX(-50%);
+              font-size: {font_size}px;
+              font-family: Arial, sans-serif;
+              font-weight: bold;
+              text-shadow: 2px 2px 4px #000000;
+              background: transparent;
+            }}
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <img src="data:image/{output_format};base64,{img_b64}" style="width:100%;">
+            <div class="overlay" contenteditable="true">{initial_text}</div>
+          </div>
+        </body>
+        </html>
+        """
+        # Render the HTML code as a component.
+        st.components.v1.html(html_code, height=600)
     except Exception as e:
-        logger.error("Error overlaying text: %s", e)
-        st.error("Failed to apply text overlay.")
-        return image_path
+        st.error("Editable overlay failed, please check.")
+        logger.error("Editable overlay error: %s", e)
 
 # ------------------------------------------------------------------------------
 # Main Application UI with Sidebar Controls
@@ -385,18 +402,34 @@ def main():
         prompt = st.text_input("Prompt", "Introducing our new summer collection, vibrant, modern, eye-catching")
         seed = st.number_input("Seed", value=0, step=1)
         output_format = st.selectbox("Output Format", ["jpeg", "png", "webp"], index=0)
-        # Option to reuse previously generated image.
         use_previous = st.checkbox("Use Previously Generated Image", value=False)
         
         # Overlay text settings (optional)
-        st.markdown("#### Overlay Settings (Optional)")
-        overlay_text = st.text_input("Overlay Text", "")
-        if overlay_text:
+        st.markdown("#### Overlay Text Settings (Optional)")
+        overlay_text_input = st.text_input("Overlay Text", "")
+        if overlay_text_input:
             font_size = st.number_input("Font Size", min_value=10, max_value=200, value=40, step=1)
             font_color = st.color_picker("Font Color", value="#FFFFFF")
         else:
             font_size, font_color = None, None
         
+        # Option to enable editable text overlay (JS)
+        editable_overlay_js = st.checkbox("Editable Overlay (JS)", value=False)
+        
+        # Drawing overlay in sidebar
+        st.markdown("#### Drawing Overlay (Optional)")
+        drawing_mode = st.selectbox("Drawing Tool:", options=["freedraw", "line", "rect", "circle"], index=0)
+        stroke_width = st.slider("Stroke Width", 1, 25, 3)
+        stroke_color = st.color_picker("Stroke Color", "#ff0000")
+        canvas_result = st_canvas(
+            stroke_width=stroke_width,
+            stroke_color=stroke_color,
+            height=150,
+            drawing_mode=drawing_mode,
+            key="canvas_overlay",
+        )
+        
+        # Task-specific inputs:
         if task_type == "Marketing Ad":
             negative_prompt = st.text_input("Negative Prompt", "")
             aspect_ratio = st.selectbox("Aspect Ratio", ["21:9", "16:9", "3:2", "5:4", "1:1"], index=2)
@@ -523,14 +556,57 @@ def main():
     if "generated_image" in st.session_state:
         output_img_path = st.session_state.generated_image
 
-        # If overlay text is provided, apply it.
-        if overlay_text:
+        # Apply overlay text (if provided) using our standard overlay function.
+        if overlay_text and not editable_overlay_js:
             try:
                 output_img_path = overlay_text_on_image(output_img_path, overlay_text, int(font_size), font_color, output_format)
             except Exception as e:
                 st.error("Failed to apply text overlay.")
-
-        st.image(output_img_path, caption="Result", use_column_width=True)
+        # If editable overlay (JS) is selected, display an HTML component with editable text.
+        if editable_overlay_js:
+            try:
+                # Convert the image to base64.
+                with open(output_img_path, "rb") as img_file:
+                    img_bytes = img_file.read()
+                img_b64 = base64.b64encode(img_bytes).decode()
+                html_code = f"""
+                <html>
+                <head>
+                  <style>
+                    .container {{
+                      position: relative;
+                      width: 100%;
+                    }}
+                    .overlay-image {{
+                      width: 100%;
+                    }}
+                    .editable-text {{
+                      position: absolute;
+                      bottom: 20px;
+                      left: 50%;
+                      transform: translateX(-50%);
+                      font-size: {font_size if font_size else 40}px;
+                      color: {font_color if font_color else "#FFFFFF"};
+                      text-shadow: 2px 2px 4px #000000;
+                      background-color: transparent;
+                    }}
+                  </style>
+                </head>
+                <body>
+                  <div class="container">
+                    <img class="overlay-image" src="data:image/{output_format};base64,{img_b64}">
+                    <div class="editable-text" contenteditable="true">{overlay_text}</div>
+                  </div>
+                </body>
+                </html>
+                """
+                st.components.v1.html(html_code, height=600)
+            except Exception as e:
+                st.error("Editable overlay failed, please check.")
+                logger.error("Editable overlay error: %s", e)
+        else:
+            st.image(output_img_path, caption="Result", use_column_width=True)
+        
         try:
             with open(output_img_path, "rb") as f:
                 image_bytes = f.read()
