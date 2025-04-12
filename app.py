@@ -13,7 +13,6 @@ import streamlit.components.v1 as components
 # Load environment variables from .env (if present) or from Streamlit secrets.
 load_dotenv()
 STABILITY_KEY = os.getenv("STABILITY_KEY") or (st.secrets.get("STABILITY_KEY") if st.secrets else None)
-
 if not STABILITY_KEY:
     st.error("Stability AI key not found. Please set it in your environment or in .streamlit/secrets.toml.")
     st.stop()
@@ -256,7 +255,7 @@ def generate_search_and_replace(image_file, prompt: str, search_prompt: str, neg
         st.error("Failed to generate search and replace image.")
         return None
 
-def generate_replace_background_and_relight(subject_image_file, background_prompt: str, background_reference_file, foreground_prompt: str, negative_prompt: str, preserve_original_subject: float, original_background_depth: float, keep_original_background: bool, light_source_strength: float, light_reference_file, light_source_direction: str, seed: int, output_format: str) -> str:
+def generate_replace_background_and_religh(subject_image_file, background_prompt: str, background_reference_file, foreground_prompt: str, negative_prompt: str, preserve_original_subject: float, original_background_depth: float, keep_original_background: bool, light_source_strength: float, light_reference_file, light_source_direction: str, seed: int, output_format: str) -> str:
     """Generate image using the replace-background-and-relight endpoint."""
     host = "https://api.stability.ai/v2beta/stable-image/edit/replace-background-and-relight"
     subject_bytes = get_file_data(subject_image_file)
@@ -299,7 +298,7 @@ def generate_replace_background_and_relight(subject_image_file, background_promp
         edited_filename = f"edited_replacebg_{base_name}_{new_seed}.{output_format}"
         with open(edited_filename, "wb") as f:
             f.write(image_bytes)
-        logger.info(f"Replace Background and Relight result saved as {edited_filename}")
+        logger.info(f"Replace Background result saved as {edited_filename}")
         return edited_filename
     except Exception as e:
         logger.error("Replace Background and Relight error: %s", e)
@@ -339,7 +338,6 @@ def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int
         with open(image_path, "rb") as img_file:
             img_bytes = img_file.read()
         img_b64 = base64.b64encode(img_bytes).decode()
-        # Determine border CSS.
         if border_weight == 0:
             border_css = "none"
         else:
@@ -380,7 +378,9 @@ def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int
             <img class="overlay-image" src="data:image/{output_format};base64,{img_b64}">
             <div class="editable-text" id="editable-text" contenteditable="false">{overlay_text}</div>
           </div>
-          <button id="download-btn" style="margin-top:10px;padding:10px 20px;background-color:#0073b1;color:#fff;border:none;border-radius:5px;cursor:pointer;">Download Overlayed Image</button>
+          <button id="download-btn" style="margin-top:10px;padding:10px 20px;background-color:#0073b1;color:#fff;border:none;border-radius:5px;cursor:pointer;">
+            Download Overlayed Image
+          </button>
           <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
           <script>
             const editableText = document.getElementById('editable-text');
@@ -404,7 +404,6 @@ def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int
             editableText.ondragstart = function() {{
                 return false;
             }};
-            // Toggle edit mode on double-click. When editable, add a dashed border.
             editableText.addEventListener('dblclick', function(e) {{
                 if (editableText.contentEditable === "false") {{
                     editableText.contentEditable = "true";
@@ -414,7 +413,6 @@ def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int
                     editableText.style.border = "{border_css}";
                 }}
             }});
-            // Download the overlayed image using html2canvas.
             document.getElementById('download-btn').addEventListener('click', function() {{
                 html2canvas(document.getElementById('container')).then(canvas => {{
                     var link = document.createElement('a');
@@ -452,7 +450,7 @@ def main():
             "Upscale Creative"
         ])
         st.markdown("#### Common Inputs")
-        prompt = st.text_input("Prompt", "Introducing our new summer collection, vibrant, modern, eye-catching")
+        common_prompt = st.text_input("Prompt", "Introducing our new summer collection, vibrant, modern, eye-catching")
         seed = st.number_input("Seed", value=0, step=1)
         output_format = st.selectbox("Output Format", ["jpeg", "png", "webp"], index=0)
         use_previous = st.checkbox("Use Previously Generated Image", value=False)
@@ -477,20 +475,28 @@ def main():
         st.session_state.border_color = border_color
         st.session_state.editable_overlay_js = True  # Always enabled.
         
-        # Task-specific inputs.
+        # Task-specific inputs with new prompt textbox if a previously generated image is used.
         if task_type == "Marketing Ad":
             negative_prompt = st.text_input("Negative Prompt", "")
             aspect_ratio = st.selectbox("Aspect Ratio", ["21:9", "16:9", "3:2", "5:4", "1:1"], index=2)
             size = st.selectbox("Image Size", ["256x256", "512x512", "1024x1024"], index=2)
+            if use_previous and "generated_image" in st.session_state:
+                marketing_new_prompt = st.text_input("New Marketing Ad Prompt", "Enter new prompt for marketing ad", key="marketing_new_prompt")
+            else:
+                marketing_new_prompt = common_prompt
             if st.button("Generate Marketing Ad"):
                 with st.spinner("Generating marketing ad..."):
-                    filename = generate_marketing_ad_stability(prompt, negative_prompt, aspect_ratio, seed, output_format, size)
+                    filename = generate_marketing_ad_stability(marketing_new_prompt, negative_prompt, aspect_ratio, seed, output_format, size)
                     if filename:
                         st.session_state.generated_image = filename
         
         elif task_type == "Control Sketch":
             control_strength = st.slider("Control Strength", 0.0, 1.0, 0.7, 0.05)
             negative_prompt = st.text_input("Negative Prompt", "")
+            if use_previous and "generated_image" in st.session_state:
+                sketch_new_prompt = st.text_input("New Sketch Prompt", "Enter new sketch prompt", key="sketch_new_prompt")
+            else:
+                sketch_new_prompt = common_prompt
             if use_previous and "generated_image" in st.session_state:
                 sketch_file = open(st.session_state.generated_image, "rb")
             else:
@@ -500,13 +506,17 @@ def main():
                     st.error("Please provide a sketch image or use a previously generated image.")
                 else:
                     with st.spinner("Generating Control Sketch..."):
-                        filename = generate_control_sketch_stability(prompt, negative_prompt, control_strength, seed, output_format, sketch_file)
+                        filename = generate_control_sketch_stability(sketch_new_prompt, negative_prompt, control_strength, seed, output_format, sketch_file)
                         if filename:
                             st.session_state.generated_image = filename
         
         elif task_type == "Control Structure":
             control_strength = st.slider("Control Strength", 0.0, 1.0, 0.7, 0.05)
             negative_prompt = st.text_input("Negative Prompt", "")
+            if use_previous and "generated_image" in st.session_state:
+                structure_new_prompt = st.text_input("New Structure Prompt", "Enter new structure prompt", key="structure_new_prompt")
+            else:
+                structure_new_prompt = common_prompt
             if use_previous and "generated_image" in st.session_state:
                 structure_file = open(st.session_state.generated_image, "rb")
             else:
@@ -516,13 +526,17 @@ def main():
                     st.error("Please provide a structure image or use a previously generated image.")
                 else:
                     with st.spinner("Generating Control Structure..."):
-                        filename = generate_control_structure_stability(prompt, negative_prompt, control_strength, seed, output_format, structure_file)
+                        filename = generate_control_structure_stability(structure_new_prompt, negative_prompt, control_strength, seed, output_format, structure_file)
                         if filename:
                             st.session_state.generated_image = filename
         
         elif task_type == "Search and Recolor":
             select_prompt = st.text_input("Select Prompt", "chicken")
             negative_prompt = st.text_input("Negative Prompt", "")
+            if use_previous and "generated_image" in st.session_state:
+                recolor_new_prompt = st.text_input("New Recolor Prompt", "Enter new recolor prompt", key="recolor_new_prompt")
+            else:
+                recolor_new_prompt = common_prompt
             if use_previous and "generated_image" in st.session_state:
                 image_file = open(st.session_state.generated_image, "rb")
             else:
@@ -533,7 +547,7 @@ def main():
                     st.error("Please provide an image for search and recolor.")
                 else:
                     with st.spinner("Generating Search and Recolor..."):
-                        filename = generate_search_and_recolor(image_file, prompt, select_prompt, negative_prompt, grow_mask, seed, output_format)
+                        filename = generate_search_and_recolor(image_file, recolor_new_prompt, select_prompt, negative_prompt, grow_mask, seed, output_format)
                         if filename:
                             st.session_state.generated_image = filename
         
@@ -542,14 +556,16 @@ def main():
             negative_prompt = st.text_input("Negative Prompt", "")
             if use_previous and "generated_image" in st.session_state:
                 image_file = open(st.session_state.generated_image, "rb")
+                replacement_prompt = st.text_input("Replacement Prompt", "Enter new prompt for replacement", key="replacement_new_prompt")
             else:
                 image_file = st.file_uploader("Upload Image for Search and Replace", type=["jpg", "jpeg", "png"])
+                replacement_prompt = common_prompt
             if st.button("Generate Search and Replace"):
                 if not image_file:
                     st.error("Please provide an image for search and replace.")
                 else:
                     with st.spinner("Generating Search and Replace..."):
-                        filename = generate_search_and_replace(image_file, prompt, search_prompt, negative_prompt, seed, output_format)
+                        filename = generate_search_and_replace(image_file, replacement_prompt, search_prompt, negative_prompt, seed, output_format)
                         if filename:
                             st.session_state.generated_image = filename
         
@@ -564,8 +580,10 @@ def main():
             light_source_strength = st.slider("Light Source Strength", 0.0, 1.0, 0.3, 0.05) if light_source_direction != "none" else None
             if use_previous and "generated_image" in st.session_state:
                 subject_image_file = open(st.session_state.generated_image, "rb")
+                relight_new_prompt = st.text_input("New Relight Prompt", "Enter new prompt for relighting", key="relight_new_prompt")
             else:
                 subject_image_file = st.file_uploader("Upload Subject Image", type=["jpg", "jpeg", "png"])
+                relight_new_prompt = common_prompt
             background_reference_file = st.file_uploader("Upload Background Reference (Optional)", type=["jpg", "jpeg", "png"])
             light_reference_file = st.file_uploader("Upload Light Reference (Optional)", type=["jpg", "jpeg", "png"])
             if st.button("Generate Replace Background and Relight"):
@@ -573,8 +591,8 @@ def main():
                     st.error("Please provide a subject image for replace background and relight.")
                 else:
                     with st.spinner("Generating Replace Background and Relight..."):
-                        filename = generate_replace_background_and_relight(
-                            subject_image_file, background_prompt, background_reference_file,
+                        filename = generate_replace_background_and_religh(
+                            subject_image_file, relight_new_prompt, background_reference_file,
                             foreground_prompt, negative_prompt, preserve_original_subject,
                             original_background_depth, keep_original_background,
                             light_source_strength if light_source_strength is not None else 0,
@@ -587,6 +605,10 @@ def main():
             creativity = st.number_input("Creativity", 0.0, 1.0, 0.30, 0.01)
             negative_prompt = st.text_input("Negative Prompt", "")
             if use_previous and "generated_image" in st.session_state:
+                upscaling_new_prompt = st.text_input("New Upscale Prompt", "Enter new prompt for upscaling", key="upscale_new_prompt")
+            else:
+                upscaling_new_prompt = common_prompt
+            if use_previous and "generated_image" in st.session_state:
                 up_image_file = open(st.session_state.generated_image, "rb")
             else:
                 up_image_file = st.file_uploader("Upload Image to Upscale", type=["jpg", "jpeg", "png"])
@@ -595,11 +617,10 @@ def main():
                     st.error("Please provide an image to upscale.")
                 else:
                     with st.spinner("Generating Upscale Creative..."):
-                        filename = generate_upscale_creative(prompt, negative_prompt, creativity, seed, output_format, up_image_file)
+                        filename = generate_upscale_creative(upscaling_new_prompt, negative_prompt, creativity, seed, output_format, up_image_file)
                         if filename:
                             st.session_state.generated_image = filename
 
-    # Main Output Display Area.
     st.markdown("## Output Image")
     if "generated_image" in st.session_state:
         output_img_path = st.session_state.generated_image
@@ -617,13 +638,11 @@ def main():
                 st.session_state.border_color,
                 output_format
             )
-            # Increase the component height to ensure the button is visible.
             components.html(html_code, height=700)
         except Exception as e:
             st.error("Editable overlay failed, please check.")
             logger.error("Editable overlay error: %s", e)
         
-        # In addition, provide a download button for the base generated image (if needed).
         try:
             with open(output_img_path, "rb") as f:
                 image_bytes = f.read()
