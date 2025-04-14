@@ -218,7 +218,8 @@ def generate_search_and_recolor(image_file, prompt: str, select_prompt: str, neg
         image_bytes = response.content
         new_seed = response.headers.get("seed", seed)
         timestamp = int(time.time() * 1000)
-        edited_filename = os.path.join(IMAGE_DIR, f"edited_searchrecolor_{os.path.splitext(os.path.basename(temp_filename))[0]}_{new_seed}_{timestamp}.{output_format}")
+        edited_filename = os.path.join(IMAGE_DIR,
+            f"edited_searchrecolor_{os.path.splitext(os.path.basename(temp_filename))[0]}_{new_seed}_{timestamp}.{output_format}")
         with open(edited_filename, "wb") as f:
             f.write(image_bytes)
         logger.info(f"Search and Recolor result saved as {edited_filename}")
@@ -249,7 +250,8 @@ def generate_search_and_replace(image_file, prompt: str, search_prompt: str, neg
         image_bytes = response.content
         new_seed = response.headers.get("seed", seed)
         timestamp = int(time.time() * 1000)
-        edited_filename = os.path.join(IMAGE_DIR, f"edited_searchreplace_{os.path.splitext(os.path.basename(temp_filename))[0]}_{new_seed}_{timestamp}.{output_format}")
+        edited_filename = os.path.join(IMAGE_DIR,
+            f"edited_searchreplace_{os.path.splitext(os.path.basename(temp_filename))[0]}_{new_seed}_{timestamp}.{output_format}")
         with open(edited_filename, "wb") as f:
             f.write(image_bytes)
         logger.info(f"Search and Replace result saved as {edited_filename}")
@@ -440,8 +442,18 @@ def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int
         return ""
 
 # ------------------------------------------------------------------------------
-# Main Application UI with Left Sidebar & Right Pane for Recent Images
+# Main Application UI with Left Sidebar & Right Pane (Scrollable) for Recent Images
 def main():
+    # Inject CSS for a scrollable container within the Recent Images expander.
+    st.markdown("""
+    <style>
+      [data-testid="stExpander"] > div > div {
+         max-height: 300px;
+         overflow-y: auto;
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
     # Load recent images from local storage if not already loaded in session state.
     if "recent_images" not in st.session_state:
         st.session_state.recent_images = sorted(
@@ -468,7 +480,7 @@ def main():
         common_prompt = st.text_input("Prompt", "Introducing our new summer collection, vibrant, modern, eye-catching")
         seed = st.number_input("Seed", value=0, step=1)
         output_format = st.selectbox("Output Format", ["jpeg", "png", "webp"], index=0)
-        # Note: The option to use a previously generated image has been removed.
+        # The option to use a previously generated image has been removed.
         
         st.markdown("#### Editable Overlay Settings")
         overlay_text_input = st.text_input("Overlay Text", "Your Ad Slogan Here")
@@ -506,7 +518,6 @@ def main():
             control_strength = st.slider("Control Strength", 0.0, 1.0, 0.7, 0.05)
             negative_prompt = st.text_input("Negative Prompt", "")
             sketch_new_prompt = st.text_input("Sketch Prompt", common_prompt, key="sketch_new_prompt")
-            # Use the selected recent image if available; otherwise, upload one.
             if "generated_image" in st.session_state and st.session_state.generated_image:
                 st.info("Using selected recent image: " + os.path.basename(st.session_state.generated_image))
                 sketch_file = open(st.session_state.generated_image, "rb")
@@ -631,7 +642,7 @@ def main():
                         if filename:
                             st.session_state.generated_image = filename
                             st.session_state.recent_images.append(filename)
-                            
+
     # Main Layout: Two Columns (Left: Output; Right: Recent Images Pane)
     col_left, col_right = st.columns([3, 1])
     
@@ -660,13 +671,14 @@ def main():
     
     with col_right:
         st.header("Recent Images")
-        selected_images = []
-        if st.session_state.recent_images:
-            # List recent images in reverse order (most recent at the top)
-            for idx, img_path in enumerate(reversed(st.session_state.recent_images)):
-                st.image(img_path, use_column_width=True)
-                if st.checkbox("Select this image", key=f"recent_checkbox_{idx}"):
-                    selected_images.append(img_path)
+        # Use an expander with a scrollable container (using custom CSS applied via the expander)
+        with st.expander("Show Recent Images", expanded=True):
+            selected_images = []
+            if st.session_state.recent_images:
+                for idx, img_path in enumerate(reversed(st.session_state.recent_images)):
+                    st.image(img_path, use_column_width=True)
+                    if st.checkbox("Select this image", key=f"recent_checkbox_{idx}"):
+                        selected_images.append(img_path)
             if st.button("Apply Selected Image"):
                 if len(selected_images) == 0:
                     st.error("No image selected. Please select one image.")
@@ -674,12 +686,14 @@ def main():
                     st.error("Multiple images selected. Please select only one.")
                 else:
                     st.session_state.generated_image = selected_images[0]
-                    with open(st.session_state.generated_image, "rb") as f:
-                        image_bytes = f.read()
-                    st.download_button(label="Download Selected Image", data=image_bytes,
-                                   file_name=os.path.basename(st.session_state.generated_image), mime="image/png")
-                    
+                    try:
+                        with open(st.session_state.generated_image, "rb") as f:
+                            image_bytes = f.read()
+                        st.download_button(label="Download Selected  Image", data=image_bytes,
+                                        file_name=os.path.basename(st.session_state.generated_image), mime="image/png")
+                    except Exception as e:
+                        st.error("Unable to prepare download for the generated image.")
                     st.success("Selected image applied.")
-                
+                    
 if __name__ == "__main__":
     main()
