@@ -114,7 +114,7 @@ def send_async_generation_request(host, params, files=None):
 # Feature Functions
 def generate_marketing_ad_stability(prompt: str, negative_prompt: str, aspect_ratio: str, seed: int, output_format: str, size: str="1024x1024") -> str:
     """Generate a marketing ad using the ultra endpoint."""
-    host = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
+    host = "https://api.stability.ai/v2beta/stable-image/generate/core"
     params = {
         "prompt": prompt,
         "negative_prompt": negative_prompt,
@@ -434,11 +434,12 @@ def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int
 # ------------------------------------------------------------------------------
 # Main Application UI with Sidebar Controls
 def main():
-    st.title("Marketing Content Generator")
-    st.markdown("## Enjoy a spacious view of your creative outputs!")
+    
+    
     
     # Sidebar: Task type and common inputs.
     with st.sidebar:
+        st.title("Marketing Content Generator")
         st.header("Settings")
         task_type = st.selectbox("Select Task Type:", options=[
             "Marketing Ad",
@@ -621,7 +622,7 @@ def main():
                         if filename:
                             st.session_state.generated_image = filename
 
-    st.markdown("## Output Image")
+    
     if "generated_image" in st.session_state:
         output_img_path = st.session_state.generated_image
 
