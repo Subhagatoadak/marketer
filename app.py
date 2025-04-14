@@ -656,13 +656,7 @@ def main():
                 st.error("Editable overlay failed, please check.")
                 logger.error("Editable overlay error: %s", e)
             
-            try:
-                with open(output_img_path, "rb") as f:
-                    image_bytes = f.read()
-                st.download_button(label="Download Generated Image", data=image_bytes,
-                                   file_name=os.path.basename(output_img_path), mime="image/png")
-            except Exception as e:
-                st.error("Unable to prepare download for the generated image.")
+            
     
     with col_right:
         st.header("Recent Images")
