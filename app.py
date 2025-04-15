@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import base64
 import streamlit.components.v1 as components
 
-# Folder to store generated images
+# Folder to store generated images and videos
 IMAGE_DIR = "generated_images"
 if not os.path.exists(IMAGE_DIR):
     os.makedirs(IMAGE_DIR)
@@ -110,7 +110,7 @@ def send_async_generation_request(host, params, files=None):
     return poll_response
 
 # ------------------------------------------------------------------------------
-# Generation Functions with Unique Filenames
+# Generation Functions (for image tasks) with Unique Filenames
 def generate_marketing_ad_stability(prompt: str, negative_prompt: str, aspect_ratio: str, seed: int,
                                       output_format: str, size: str="1024x1024") -> str:
     host = "https://api.stability.ai/v2beta/stable-image/generate/core"
@@ -340,7 +340,72 @@ def generate_upscale_creative(prompt: str, negative_prompt: str, creativity: flo
         return None
 
 # ------------------------------------------------------------------------------
-# Editable Overlay HTML Generation Function
+# New: Image-to-Video Generation Function with Resizing to 768x768
+def generate_image_to_video(image_file, seed: int, cfg_scale: float, motion_bucket_id: int) -> str:
+    """
+    Resizes the uploaded image to 768x768, sends a POST request to the Stability AI
+    image-to-video endpoint, polls for the video result, saves it locally, and returns the filename.
+    """
+    host = "https://api.stability.ai/v2beta/image-to-video"
+    try:
+        # Resize the image to 768x768 using PIL.
+        pil_image = Image.open(image_file)
+        resized_image = pil_image.resize((768, 768))
+        img_buffer = io.BytesIO()
+        resized_image.save(img_buffer, format="PNG")
+        img_buffer.seek(0)
+        
+        # Initiate video generation with the resized image.
+        response = requests.post(
+            host,
+            headers={"authorization": f"Bearer {STABILITY_KEY}"},
+            files={"image": img_buffer},
+            data={
+                "seed": seed,
+                "cfg_scale": cfg_scale,
+                "motion_bucket_id": motion_bucket_id
+            }
+        )
+        generation_id = response.json().get("id")
+        if not generation_id:
+            st.error("Failed to initiate video generation; no generation id returned.")
+            return None
+        
+        # API expects an ID of exactly 64 characters. If not, alert the user.
+        if len(generation_id) != 64:
+            st.error(f"Generation id '{generation_id}' is not 64 characters long (length: {len(generation_id)}).")
+            return None
+        
+        st.info("Generation ID: " + generation_id)
+        poll_url = f"https://api.stability.ai/v2beta/image-to-video/result/{generation_id}"
+        while True:
+            poll_response = requests.get(
+                poll_url,
+                headers={
+                    "accept": "video/*",
+                    "authorization": f"Bearer {STABILITY_KEY}"
+                }
+            )
+            if poll_response.status_code == 202:
+                st.info("Generation in-progress, waiting 10 seconds...")
+                time.sleep(10)
+            elif poll_response.status_code == 200:
+                st.info("Video generation complete!")
+                break
+            else:
+                raise Exception(str(poll_response.json()))
+        video_content = poll_response.content
+        timestamp = int(time.time() * 1000)
+        video_filename = os.path.join(IMAGE_DIR, f"image_to_video_{seed}_{timestamp}.mp4")
+        with open(video_filename, "wb") as f:
+            f.write(video_content)
+        return video_filename
+    except Exception as e:
+        st.error("Error during video generation: " + str(e))
+        return None
+
+# ------------------------------------------------------------------------------
+# Editable Overlay HTML Generation Function (for images)
 def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int, font_color: str,
                               font_type: str, font_weight: str, font_style: str, border_weight: int,
                               border_color: str, output_format: str) -> str:
@@ -442,9 +507,9 @@ def get_editable_overlay_html(image_path: str, overlay_text: str, font_size: int
         return ""
 
 # ------------------------------------------------------------------------------
-# Main Application UI with Left Sidebar & Right Pane (Scrollable) for Recent Images
+# Main Application UI with Left Sidebar & Right Pane (Recent Media in an Expander)
 def main():
-    # Inject CSS for a scrollable container within the Recent Images expander.
+    # Inject CSS for a scrollable container within the Recent Media expander.
     st.markdown("""
     <style>
       [data-testid="stExpander"] > div > div {
@@ -454,7 +519,7 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    # Load recent images from local storage if not already loaded in session state.
+    # Initialize session state containers if they do not exist.
     if "recent_images" not in st.session_state:
         st.session_state.recent_images = sorted(
             [os.path.join(IMAGE_DIR, f) for f in os.listdir(IMAGE_DIR)
@@ -462,6 +527,15 @@ def main():
             key=lambda x: os.path.getmtime(x),
             reverse=True
         )
+    if "recent_videos" not in st.session_state:
+        st.session_state.recent_videos = sorted(
+            [os.path.join(IMAGE_DIR, f) for f in os.listdir(IMAGE_DIR)
+             if f.lower().endswith(".mp4")],
+            key=lambda x: os.path.getmtime(x),
+            reverse=True
+        )
+    if "selected_video" not in st.session_state:
+        st.session_state.selected_video = None
 
     # Left Sidebar: Settings and Controls
     with st.sidebar:
@@ -474,13 +548,13 @@ def main():
             "Search and Recolor",
             "Search and Replace",
             "Replace Background and Relight",
-            "Upscale Creative"
+            "Upscale Creative",
+            "Image to Video"
         ])
         st.markdown("#### Common Inputs")
         common_prompt = st.text_input("Prompt", "Introducing our new summer collection, vibrant, modern, eye-catching")
         seed = st.number_input("Seed", value=0, step=1)
         output_format = st.selectbox("Output Format", ["jpeg", "png", "webp"], index=0)
-        # The option to use a previously generated image has been removed.
         
         st.markdown("#### Editable Overlay Settings")
         overlay_text_input = st.text_input("Overlay Text", "Your Ad Slogan Here")
@@ -643,36 +717,33 @@ def main():
                             st.session_state.generated_image = filename
                             st.session_state.recent_images.append(filename)
 
-    # Main Layout: Two Columns (Left: Output; Right: Recent Images Pane)
+        elif task_type == "Image to Video":
+            cfg_scale = st.number_input("CFG Scale", value=1.8, step=0.1, format="%.1f")
+            motion_bucket_id = st.number_input("Motion Bucket ID", value=127, step=1)
+            if "generated_image" in st.session_state and st.session_state.generated_image:
+                st.info("Using selected recent image: " + os.path.basename(st.session_state.generated_image))
+                video_image_file = open(st.session_state.generated_image, "rb")
+            else:
+                video_image_file = st.file_uploader("Upload Image for Video", type=["jpg", "jpeg", "png"])
+            if st.button("Generate Image to Video"):
+                if not video_image_file:
+                    st.error("Please upload an image for video generation.")
+                else:
+                    with st.spinner("Generating video... This may take some time."):
+                        video_filename = generate_image_to_video(video_image_file, seed, cfg_scale, motion_bucket_id)
+                        if video_filename:
+                            st.session_state.generated_video = video_filename
+                            st.session_state.recent_videos.append(video_filename)
+                            st.success("Video generation complete!")
+
+    # Main Layout: Two Columns (Left: Output; Right: Recent Media Expander)
     col_left, col_right = st.columns([3, 1])
     
-    with col_left:
-        if "generated_image" in st.session_state:
-            output_img_path = st.session_state.generated_image
-            try:
-                html_code = get_editable_overlay_html(
-                    output_img_path,
-                    st.session_state.overlay_text,
-                    st.session_state.font_size,
-                    st.session_state.font_color,
-                    st.session_state.font_type,
-                    st.session_state.font_weight,
-                    st.session_state.font_style,
-                    st.session_state.border_weight,
-                    st.session_state.border_color,
-                    output_format
-                )
-                components.html(html_code, height=700)
-            except Exception as e:
-                st.error("Editable overlay failed, please check.")
-                logger.error("Editable overlay error: %s", e)
-            
-            
+    
     
     with col_right:
-        st.header("Recent Images")
-        # Use an expander with a scrollable container (using custom CSS applied via the expander)
-        with st.expander("Show Recent Images", expanded=True):
+        with st.expander("Recent Images", expanded=True):
+            
             selected_images = []
             if st.session_state.recent_images:
                 for idx, img_path in enumerate(reversed(st.session_state.recent_images)):
@@ -689,11 +760,53 @@ def main():
                     try:
                         with open(st.session_state.generated_image, "rb") as f:
                             image_bytes = f.read()
-                        st.download_button(label="Download Selected  Image", data=image_bytes,
+                        st.download_button(label="Download Selected Image", data=image_bytes,
                                         file_name=os.path.basename(st.session_state.generated_image), mime="image/png")
                     except Exception as e:
                         st.error("Unable to prepare download for the generated image.")
                     st.success("Selected image applied.")
-                    
+            
+        with st.expander("Recent videos", expanded=True):
+            if st.session_state.recent_videos:
+                for idx, video_path in enumerate(reversed(st.session_state.recent_videos)):
+                    st.image(st.session_state.generated_image, use_column_width=True)
+                    st.write(os.path.basename(video_path))
+                    if st.button("Show Video", key=f"show_video_{idx}"):
+                        st.session_state.selected_video = video_path
+                        
+    with col_left:
+        if "generated_image" in st.session_state:
+            output_img_path = st.session_state.generated_image
+            try:
+                html_code = get_editable_overlay_html(
+                    output_img_path,
+                    st.session_state.overlay_text,
+                    st.session_state.font_size,
+                    st.session_state.font_color,
+                    st.session_state.font_type,
+                    st.session_state.font_weight,
+                    st.session_state.font_style,
+                    st.session_state.border_weight,
+                    st.session_state.border_color,
+                    output_format
+                )
+                components.html(html_code, height=400)
+            except Exception as e:
+                st.error("Editable overlay failed, please check.")
+                logger.error("Editable overlay error: %s", e)
+            
+    # Modal window for selected video
+        if st.session_state.selected_video:
+            
+            st.video(st.session_state.selected_video)
+            try:
+                with open(st.session_state.selected_video, "rb") as vf:
+                    video_bytes = vf.read()
+                st.download_button("Download Video", video_bytes,
+                                    file_name=os.path.basename(st.session_state.selected_video), mime="video/mp4")
+            except Exception as e:
+                st.error("Download failed: " + str(e))
+            st.session_state.selected_video = None
+
 if __name__ == "__main__":
     main()
